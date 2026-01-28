@@ -1,0 +1,79 @@
+/* 
+================================================================================
+ Script: Bronze Layer Table Creation
+ Purpose: Create staging/landing tables in the 'bronze' schema of Datawarehouse
+ Author: [Your Name]
+ Disclaimer:
+   - This script is intended for Microsoft SQL Server.
+   - Dropping/creating objects may cause data loss. Run only in DEV/TEST unless approved.
+   - Ensure backups exist before executing in production environments.
+   - Table definitions here are simplified for demonstration; adjust datatypes, constraints,
+     and indexes according to business requirements.
+================================================================================
+*/
+IF OBJECT_ID('bronze.crm_cust_info', 'U') IS NOT NULL
+    DROP TABLE bronze.crm_cust_info;
+create table bronze.crm_cust_info(
+    cst_id int,
+    cst_key NVARCHAR(50),
+    cst_firstname nvarchar(50),
+    cst_lastname nvarchar (50),
+    cst_material_status nvarchar(50),
+    cst_gndr NVARCHAR(50),
+    cst_create_date date
+);
+go 
+IF OBJECT_ID('bronze.crm_prd_info', 'U') IS NOT NULL
+    DROP TABLE bronze.crm_prd_info;
+create table bronze.crm_prd_info(
+    prd_id int,
+    prd_key nvarchar(50),
+    prd_nm NVARCHAR(50),
+    prd_cost int ,
+    prd_line NVARCHAR(50),
+    prd_start_dt DATETIME ,
+    prd_end_dt DATETIME
+);
+GO
+IF OBJECT_ID('bronze.crm_sales_details','U') IS NOT NULL 
+DROP TABLE bronze.crm_sales_details;
+create table bronze.crm_sales_details(
+    sls_ord_num nvarchar(50),
+    sls_prd_key NVARCHAR(50),
+    sls_cust_id int ,
+    sls_order_dt int,
+    sls_ship_dt int,
+    sls_due_dt int ,
+    sls_sales int ,
+    sls_quantity int,
+    sls_price int
+);
+ GO 
+ IF OBJECT_ID('bronze.erp_cust_az12','U') IS NOT NULL 
+DROP TABLE bronze.erp_cust_az12 ;
+
+ CREATE TABLE bronze.erp_cust_az12(
+    cid NVARCHAR(50),
+    bdate DATE,
+    gen NVARCHAR(50)
+ );
+ go 
+  IF OBJECT_ID('bronze.erp_loc_a101','U') IS NOT NULL 
+DROP TABLE bronze.erp_loc_a101 ;
+
+ create table bronze.erp_loc_a101(
+    cid NVARCHAR(50),
+    cntry nvarchar(50)
+ );
+ go 
+  IF OBJECT_ID('bronze.erp_px_cat_g1v2','U') IS NOT NULL 
+DROP TABLE bronze.erp_px_cat_g1v2 ;
+
+ create table bronze.erp_px_cat_g1v2(
+    id NVARCHAR(50),
+    cat NVARCHAR(50),
+    subcat NVARCHAR(50),
+    maintenance NVARCHAR(50)
+
+ );
+  
