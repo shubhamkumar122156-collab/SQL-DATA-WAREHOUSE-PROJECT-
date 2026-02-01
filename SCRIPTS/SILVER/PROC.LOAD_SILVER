@@ -1,0 +1,317 @@
+/*
+===========================================================
+ 
+ This script is part of a controlled ETL workflow that moves
+ data from the BRONZE layer (raw ingestion) into the SILVER
+ layer (clean, normalized, deduplicated).
+
+ ⚠️ DO NOT MODIFY, DELETE, OR REUSE without proper review.
+ Unauthorized changes may break production systems,
+ cause data corruption, or lead to compliance issues.
+
+ All updates must be version-controlled and peer-reviewed.
+ Keep this script intact to ensure reproducibility,
+ auditability, and long-term maintainability.
+
+ ----------------------------------------------------------
+ HOW THIS SCRIPT WORKS & PROBLEMS IT SOLVES
+ ----------------------------------------------------------
+
+ 1. silver.crm_cust_info
+    - Deduplicates customer records using ROW_NUMBER().
+    - Normalizes marital status and gender codes.
+    - Trims whitespace from names.
+    ✅ Problem solved: inconsistent codes, duplicate records.
+
+ 2. silver.crm_prd_info
+    - Derives category IDs and sales keys from product keys.
+    - Normalizes product line codes (M → MOUNTAIN, etc.).
+    - Calculates product end dates using LEAD().
+    ✅ Problem solved: fragmented product metadata, unclear timelines.
+
+ 3. silver.crm_sales_details
+    - Safely casts dates with TRY_CAST.
+    - Corrects negative prices by flipping values.
+    - Computes sales as price × quantity.
+    ✅ Problem solved: invalid dates, negative pricing anomalies.
+
+ 4. silver.erp_cust_az12
+    - Cleans customer IDs (removes NAS prefix).
+    - Nullifies invalid future birthdates.
+    - Normalizes gender values, removing hidden characters.
+    ✅ Problem solved: malformed IDs, invalid dates, dirty gender fields.
+
+ 5. silver.erp_loc_a101
+    - Cleans CID values (removes hyphens).
+    - Normalizes country codes (US/USA → UNITED STATES, DE → GERMANY).
+    ✅ Problem solved: inconsistent country naming, dirty IDs.
+
+ 6. silver.erp_px_cat_g1v2
+    - Cleans and uppercases maintenance field.
+    ✅ Problem solved: inconsistent casing, hidden characters.
+
+ ----------------------------------------------------------
+ PURPOSE
+ ----------------------------------------------------------
+ This ETL script ensures that SILVER tables contain clean,
+ standardized, and deduplicated data ready for downstream
+ analytics, reporting, and GOLD-layer transformations.
+
+===========================================================
+----------------------------------------------------------
+ METADATA
+ ----------------------------------------------------------
+ Author      : [shubham kumar  ]
+ Last Updated: [2026-02-01]
+ Environment : SQL Server (ETL Pipeline)
+ Purpose     : Bronze → Silver layer transformation
+ Dependencies: bronze.crm_cust_info, bronze.crm_prd_info,
+               bronze.crm_sales_details, bronze.erp_cust_az12,
+               bronze.erp_loc_a101, bronze.erp_px_cat_g1v2
+===========================================================
+*/
+CREATE or ALTER procedure silver.load_silver as 
+PRINT'======================================================='
+PRINT'============LOADING THE SILVER LAYER ==================' 
+PRINT '======================================================='
+DECLARE @STARTTIME DATETIME ,@ENDTIME DATETIME,@BATCH_STARTTIME DATETIME,@BATCH_ENDTIME DATETIME ;
+    SET @BATCH_STARTTIME = GETDATE();
+BEGIN TRY
+
+print '========================================'
+PRINT'silver table customer_info  is truncating '
+print '========================================'
+truncate table silver.crm_cust_info ;
+
+print'++++++++++++++++++++++'
+print'inserting data'
+print'++++++++++++++++++++++'
+SET @STARTTIME = GETDATE();
+insert into silver.crm_cust_info(CST_ID,CST_KEY,CST_FIRSTNAME,CST_LASTNAME,CST_MATERIAL_STATUS ,CST_GNDR,CST_CREATE_DATE )
+SELECT
+    CST_ID,
+    CST_KEY,
+    TRIM(CST_FIRSTNAME) AS CST_FIRSTNAME,
+    TRIM(CST_LASTNAME) AS CST_LASTNAME,
+    CASE 
+        WHEN UPPER(TRIM(CST_MATERIAL_STATUS)) = 'M' THEN 'MARRIED'
+        WHEN UPPER(TRIM(CST_MATERIAL_STATUS)) = 'S' THEN 'SINGLE'
+        ELSE 'N/A' 
+    END AS CST_MARITAL_STATUS,
+    CASE
+        WHEN UPPER(TRIM(CST_GNDR)) = 'F' THEN 'FEMALE'
+        WHEN UPPER(TRIM(CST_GNDR)) = 'M' THEN 'MALE'
+        ELSE 'N/A' 
+    END AS CST_GNDR
+    , cst_create_date
+FROM (
+    SELECT  
+        *,
+        ROW_NUMBER() OVER (
+            PARTITION BY CST_ID 
+            ORDER BY CST_CREATE_DATE DESC
+        ) AS flag
+    FROM bronze.crm_cust_info
+    where CST_ID IS not NULL
+) t
+WHERE flag = 1 ; 
+print'#################'
+PRINT'data inserted '
+PRINT'#################'
+SET @ENDTIME = GETDATE();
+PRINT'LOADING DURATION'+'  ' + CAST(DATEDIFF(SECOND,@STARTTIME,@ENDTIME)AS NVARCHAR)+'SECONDS';
+TRUNCATE TABLE silver.crm_prd_info
+
+PRINT'==================================='
+PRINT'TABLE silver.crm_prd_info IS truncating' 
+PRINT'==================================='
+
+PRINT'+++++++++++++++++++++++++++++++++++'
+PRINT'INSERTING DATA'
+PRINT '++++++++++++++++++++++++++++++++++'
+SET @STARTTIME = GETDATE();
+INSERT INTO silver.crm_prd_info (
+    cat_id,
+    prd_sls_key,
+    prd_id,
+    prd_key,
+    prd_nm,
+    prd_cost,
+    prd_line,
+    prd_start_dt,
+    prd_end_dt
+)
+SELECT
+    REPLACE(SUBSTRING(TRIM(prd_key), 1, 5), '-', '_') AS cat_id,
+    SUBSTRING(TRIM(prd_key), 7, LEN(TRIM(prd_key))) AS prd_sls_key,
+    prd_id,
+    prd_key,
+    prd_nm,
+    ISNULL(prd_cost, 0) AS prd_cost,
+    CASE UPPER(TRIM(prd_line)) 
+        WHEN 'M' THEN 'MOUNTAIN'
+        WHEN 'R' THEN 'ROAD'
+        WHEN 'S' THEN 'SALES PRODUCT'
+        WHEN 'T' THEN 'TOURING'
+        ELSE 'N/A' 
+    END AS prd_line,
+    CAST(prd_start_dt AS DATE) AS prd_start_dt,
+    CAST(
+        DATEADD(
+            DAY, -1, 
+            LEAD(prd_start_dt, 1, NULL) OVER (
+                PARTITION BY prd_key 
+                ORDER BY prd_start_dt ASC
+            )
+        ) AS DATE
+    ) AS prd_end_dt
+FROM bronze.crm_prd_info;
+PRINT'######################'
+PRINT'DATA INSERT COMPLETE'
+PRINT'#####################'
+SET @ENDTIME = GETDATE();
+PRINT'LOADING DURATION'+'  ' + CAST(DATEDIFF(SECOND,@STARTTIME,@ENDTIME)AS NVARCHAR)+'SECONDS';
+PRINT'==================================='
+PRINT'TABLE silver.crm_sales_details IS truncating' 
+PRINT'==================================='
+
+TRUNCATE table silver.crm_sales_details;
+print'++++++++++++++++++++++'
+print'inserting data'
+print'++++++++++++++++++++++'
+ SET @STARTTIME = GETDATE()
+ insert into silver.crm_sales_details(sls_ord_num,
+    sls_prd_key,
+    sls_cust_id,
+    sls_order_dt,
+    sls_ship_dt,
+    sls_due_dt,
+    sls_sales,
+    sls_quantity,
+    sls_price )
+ 
+SELECT 
+    sls_ord_num,
+    sls_prd_key,
+    sls_cust_id,
+    try_CAST(CAST(sls_order_dt as nvarchar(8)) as date ) as sls_order_dt,
+    try_CAST(CAST(sls_ship_dt as nvarchar(8)) as date ) as sls_ship_dt,
+    try_CAST(CAST(sls_due_dt as nvarchar(8)) as date ) as sls_due_dt,
+    (case when ISNULL(sls_price,0) < 0 then -1*ISNULL(sls_price,0) else ISNULL(sls_price,0) end)* sls_quantity as sls_sales,
+    sls_quantity,
+    case
+    when ISNULL(sls_price,0) < 0 then -1*ISNULL(sls_price,0)
+    else ISNULL(sls_price,0) 
+    end as sls_price
+  FROM BRONZE.crm_sales_details ;
+print'#################'
+PRINT'data inserted '
+PRINT'#################'
+SET @ENDTIME = GETDATE();
+PRINT'LOADING DURATION'+'  ' + CAST(DATEDIFF(SECOND,@STARTTIME,@ENDTIME)AS NVARCHAR)+'SECONDS';
+PRINT'==================================='
+PRINT'TABLE silver.erp_cust_az12 IS truncating' 
+PRINT'==================================='
+
+TRUNCATE table silver.erp_cust_az12;
+ 
+print'++++++++++++++++++++++'
+print'inserting data'
+print'++++++++++++++++++++++'
+SET @STARTTIME = GETDATE()
+insert into silver.erp_cust_az12 (
+    cid,
+    cusid ,
+    bdate ,
+    gen )
+select
+    cid,
+     CASE 
+            WHEN cid like 'NAS%' 
+            then SUBSTRING(TRIM(cid),4,LEN(TRIM(cid)))  
+            else TRIM(cid) 
+            end as cusid  , 
+    case when bdate > = GETDATE() then null else bdate end as bdate,
+    CASE 
+    when UPPER(REPLACE(REPLACE(TRIM(gen), CHAR(13), ''), CHAR(10), '')) = 'F' THEN 'FEMALE' WHEN UPPER(REPLACE(REPLACE(TRIM(gen), CHAR(13), ''), CHAR(10), '')) = 'M' THEN 'MALE'when UPPER(REPLACE(REPLACE(TRIM(gen), CHAR(13), ''), CHAR(10), '')) = '' then null else UPPER(REPLACE(REPLACE(TRIM(gen), CHAR(13), ''), CHAR(10), ''))  END  AS gen
+     from bronze.erp_cust_az12 ;
+print'#################'
+PRINT'data inserted '
+PRINT'#################'
+SET @ENDTIME = GETDATE();
+PRINT'LOADING DURATION'+'  ' + CAST(DATEDIFF(SECOND,@STARTTIME,@ENDTIME)AS NVARCHAR)+'SECONDS';
+ PRINT'==================================='
+PRINT'TABLE SILVER.ERP_LOC_A101 IS truncating' 
+PRINT'==================================='
+
+ TRUNCATE TABLE  SILVER.ERP_LOC_A101  ;
+ 
+ print'++++++++++++++++++++++'
+print'inserting data'
+print'++++++++++++++++++++++'
+SET @STARTTIME = GETDATE()
+ INSERT INTO SILVER.ERP_LOC_A101(CID,cntry) 
+   
+SELECT  REPLACE(UPPER(TRIM(cid)),'-','') as cid , 
+CASE  
+            WHEN UPPER(REPLACE(REPLACE(TRIM(cntry), CHAR(13), ''), CHAR(10), '')) IN  ('UNITED STATES','US','USA' ) THEN 'UNITED STATES' 
+            WHEN UPPER(REPLACE(REPLACE(TRIM(cntry), CHAR(13), ''), CHAR(10), '')) = 'DE' THEN 'GERMANY' 
+            WHEN UPPER(REPLACE(REPLACE(TRIM(cntry), CHAR(13), ''), CHAR(10), '')) = '' THEN 'N/A' 
+            ELSE UPPER(REPLACE(REPLACE(TRIM(cntry), CHAR(13), ''), CHAR(10), '')) END AS cntry 
+            from bronze.erp_loc_a101;
+print'#################'
+PRINT'data inserted '
+PRINT'#################'
+SET @ENDTIME = GETDATE();
+PRINT'LOADING DURATION'+'  ' + CAST(DATEDIFF(SECOND,@STARTTIME,@ENDTIME)AS NVARCHAR)+'SECONDS';
+PRINT'==================================='
+PRINT'TABLE SILVER.erp_px_cat_g1v2 IS truncating' 
+PRINT'==================================='
+
+TRUNCATE TABLE SILVER.erp_px_cat_g1v2;
+ 
+print'++++++++++++++++++++++'
+print'inserting data'
+print'++++++++++++++++++++++'
+SET @STARTTIME = GETDATE()
+INSERT INTO SILVER.erp_px_cat_g1v2(
+            id,
+            cat,
+            subcat,
+            maintenance)
+  select  
+        id,
+        cat,
+        subcat,
+        UPPER(REPLACE(REPLACE(TRIM(maintenance), CHAR(13), ''), CHAR(10), '')) as maintenance
+  from bronze.erp_px_cat_g1v2  ;
+print'#################'
+PRINT'data inserted '
+PRINT'#################'
+SET @ENDTIME = GETDATE();
+PRINT'LOADING DURATION'+'  ' + CAST(DATEDIFF(SECOND,@STARTTIME,@ENDTIME)AS NVARCHAR)+'SECONDS';
+set @BATCH_ENDTIME = GETDATE()
+PRINT'-------------------------------------------------------------------------------------------';
+       PRINT 'TOTAL TIME TAKEN TO LOAD SILVER  LAYER - ' 
+      + CAST(DATEDIFF(SECOND,@BATCH_STARTTIME,@BATCH_ENDTIME) AS NVARCHAR) 
+      + ' SECONDS';
+       PRINT'-------------------------------------------------------------------------------------------';
+
+END TRY
+BEGIN CATCH
+    PRINT '========================================'
+    PRINT 'ERROR OCCURRED DURING ETL PROCESS'
+    PRINT '========================================'
+    PRINT 'Message: ' + ERROR_MESSAGE();
+    PRINT 'Line: ' + CAST(ERROR_LINE() AS NVARCHAR(10));
+    PRINT 'Severity: ' + CAST(ERROR_SEVERITY() AS NVARCHAR(10));
+    PRINT 'State: ' + CAST(ERROR_STATE() AS NVARCHAR(10));
+
+
+END CATCH;
+
+
+
+
+ 
+
