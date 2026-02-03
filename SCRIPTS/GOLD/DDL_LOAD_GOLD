@@ -1,0 +1,100 @@
+ DISCLAIMER:
+    -----------------------------------------------------------------------------------------
+    This script defines **Gold Layer views** (dimensions and facts) for the data warehouse.
+    - Gold Layer: Business-ready, curated views built on top of Silver Layer staging tables.
+    - Purpose: Provide dimensional modeling structures (surrogate keys, attributes, measures)
+               for analytics, reporting, and BI consumption.
+
+    IMPORTANT NOTES:
+    1. DDL Only:
+       - These scripts create views only; no ETL or data transformation logic is included.
+    2. Dependency:
+       - Gold Layer views depend on Silver Layer tables. Any upstream data issues will flow
+         into Gold without correction here.
+    3. Non-Source of Truth:
+       - Gold Layer is optimized for reporting and analytics, not for transactional use.
+    4. Governance:
+       - All schema changes must be version-controlled in Git.
+       - Do not modify views directly in production without approval.
+    5. Compliance:
+       - Sensitive attributes must be handled per organizational standards.
+       - These views do not enforce masking, encryption, or compliance policies.
+    6. Liability:
+       - Provided “AS IS” without warranties of accuracy, completeness, or fitness.
+       - Use at your own risk. Maintainers are not liable for downstream impact.
+
+    RESPONSIBILITIES:
+    -----------------------------------------------------------------------------------------
+    - Developers: Ensure views are idempotent, documented, and aligned with dimensional design.
+    - Analysts: Use Gold Layer for certified reporting and BI dashboards.
+    - Admins: Monitor schema evolution and enforce governance policies.
+
+********************************************************************************************/
+
+DROP VIEW gold.dim_customers;
+CREATE VIEW gold.dim_customers as 
+SELECT 
+ROW_NUMBER() OVER(ORDER BY c.cst_id) as Customer_key ,
+c.cst_id AS customer_id,
+c.cst_key AS customer_number,
+CONCAT(TRIM(c.cst_firstname), ' ', TRIM(c.cst_lastname)) AS Full_Name,
+L.cntry AS Country,
+Z.BDATE AS Date_of_Birth,
+c.cst_material_status  AS Marital_status,   
+        CASE WHEN c.cst_gndr <> 'n/a' 
+        then c.cst_gndr 
+        else coalesce(z.gen ,'n/a' )end  as Gender ,
+c.cst_create_date as Create_date
+FROM SILVER.crm_cust_info AS c
+LEFT JOIN SILVER.ERP_LOC_A101 AS L 
+ON c.cst_key = L.cid
+LEFT JOIN SILVER.erp_cust_az12 AS Z 
+ON c.cst_key = Z.cusid;
+
+go;
+
+DROP VIEW gold.dim_product;
+go;
+CREATE VIEW gold.dim_product as 
+select
+ROW_NUMBER() over(order by pr.prd_start_dt,pr.prd_key  ) as Product_key,
+pr.prd_id as Product_id,
+pr.prd_sls_key Product_number ,
+pr.cat_id Category_id,
+pr.prd_nm as Product_name ,
+cat.cat as Category_name ,
+cat.subcat as Subcategory_name ,
+pr.prd_line as Product_line ,
+pr.prd_cost Cost,
+pr.prd_start_dt Start_date , 
+cat.maintenance as Maintenance
+from 
+silver.crm_prd_info as pr left join silver.erp_px_cat_g1v2 as cat 
+on cat.id = pr.cat_id 
+where  pr.prd_end_dt is null;
+go;
+
+DROP VIEW gold.fact_sales;
+go;
+create view gold.fact_sales as 
+SELECT 
+gc.customer_key,
+pr.product_key,
+sls_ord_num as order_number ,
+sls_prd_key as product_number,
+sls_cust_id as customer_id,
+sls_order_dt as order_date,
+sls_ship_dt as ship_date,
+sls_due_dt as due_date,
+sls_price as price,
+sls_quantity as quantity,
+sls_sales as sales_amount 
+FROM 
+SILVER.crm_sales_details as ss left join gold.dim_customers as gc
+on ss.sls_cust_id = gc.customer_id left join gold.dim_product as pr 
+on ss.sls_prd_key = pr.product_number;
+
+
+
+
+
