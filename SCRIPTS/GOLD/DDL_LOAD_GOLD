@@ -40,7 +40,7 @@ c.cst_key AS customer_number,
 CONCAT(TRIM(c.cst_firstname), ' ', TRIM(c.cst_lastname)) AS Full_Name,
 L.cntry AS Country,
 Z.BDATE AS Date_of_Birth,
-c.cst_material_status  AS Marital_status,   
+c.cst_marital_status  AS Marital_status,   
         CASE WHEN c.cst_gndr <> 'n/a' 
         then c.cst_gndr 
         else coalesce(z.gen ,'n/a' )end  as Gender ,
